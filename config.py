@@ -31,6 +31,7 @@ LEARNING_RATE = 0.001
 KFAC_DAMPING = 1e-4            # Tikhonov damping for K‑FAC
 KFAC_UPDATE_FREQ = 10          # update Kronecker factors every N steps
 SHAMPOO_PRECONDITIONER_UPDATE = 100  # update Shampoo preconditioners every N steps
-OPTIMIZER = 'kfac'             # 'kfac' or 'shampoo'
+
+OPTIMIZER = 'shampoo'          # instead of 'kfac'
 
 TOP_N = 3
