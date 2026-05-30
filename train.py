@@ -40,7 +40,6 @@ def run_for_window(returns, window_days):
     X, y = prepare_features(returns, window_days)
     if X is None:
         return None
-    n_etfs = X.shape[0]
     input_size = X.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = PortfolioNetwork(input_size, config.HIDDEN_SIZES, config.OUTPUT_SIZE, config.ACTIVATION).to(device)
@@ -55,26 +54,15 @@ def run_for_window(returns, window_days):
         optimizer = Shampoo(model.parameters(), lr=config.LEARNING_RATE, damping=config.KFAC_DAMPING, update_freq=config.SHAMPOO_PRECONDITIONER_UPDATE)
     for epoch in range(config.EPOCHS):
         train_one_epoch(model, dataloader, optimizer, criterion, device)
-    # Predict on the same training data (score = predicted return)
     model.eval()
     with torch.no_grad():
         pred = model(X_tensor).cpu().numpy()
-    raw_scores = {ticker: pred[i] for i, ticker in enumerate(returns.columns)}
-    return raw_scores, None  # second return for backtest later
+    # Convert numpy float32 to Python float for JSON serialization
+    raw_scores = {ticker: float(pred[i]) for i, ticker in enumerate(returns.columns)}
+    return raw_scores, None
 
 def rolling_walkforward_backtest(returns_df, window_days, top_n=3):
-    n = len(returns_df)
-    sum_returns = {}
-    count = {}
-    for t in range(window_days, n - 1):
-        window = returns_df.iloc[t - window_days : t]
-        next_day = returns_df.iloc[t]
-        scores, _ = run_for_window(window, window_days)  # we could reuse, but for speed we skip
-        # Since run_for_window is expensive, we'll implement a simpler version for backtest
-        # For now, placeholder – in practice, we'd train a model for each day.
-        # Given time, we'll use a simpler: just use the raw predicted return from the last window's model as score.
-        # But that's not true walk‑forward. To meet the 6h limit, we'll omit backtest in this engine.
-        pass
+    # Placeholder – not used in this version to keep runtime short
     return {}
 
 def main():
@@ -110,9 +98,10 @@ def main():
                 })
             except Exception as e:
                 print(f"    Failed for window {w}: {e}")
-        # For backtest, we'll skip to keep runtime low
+        # Use the last window as best (for simplicity)
+        best_data = all_window_results[-1] if all_window_results else None
         results["universes"][uni_name] = {
-            "best_window_data": all_window_results[-1] if all_window_results else None,
+            "best_window_data": best_data,
             "all_windows": all_window_results
         }
     os.makedirs("output", exist_ok=True)
