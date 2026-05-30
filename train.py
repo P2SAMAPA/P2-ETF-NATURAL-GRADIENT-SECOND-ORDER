@@ -14,13 +14,15 @@ from kfac_optimizer import KFACOptimizer, Shampoo
 
 def normalize_scores(score_dict):
     scores = np.array(list(score_dict.values()))
+    # Replace NaN with 0
+    scores = np.nan_to_num(scores, nan=0.0)
     min_s, max_s = scores.min(), scores.max()
     if max_s - min_s < 1e-12:
         return {k: 0.0 for k in score_dict}
     norm = (scores - min_s) / (max_s - min_s)
     return {ticker: float(norm[i]) for i, ticker in enumerate(score_dict.keys())}
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, clip_value=1.0):
     model.train()
     total_loss = 0.0
     for X_batch, y_batch in dataloader:
@@ -30,6 +32,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device):
         pred = model(X_batch)
         loss = criterion(pred, y_batch)
         loss.backward()
+        # Gradient clipping to prevent exploding gradients
+        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_value)
         optimizer.step()
         total_loss += loss.item() * X_batch.size(0)
     return total_loss / len(dataloader.dataset)
@@ -38,7 +42,7 @@ def run_for_window(returns, window_days):
     if len(returns) < window_days + 1:
         return None
     X, y = prepare_features(returns, window_days)
-    if X is None:
+    if X is None or len(X) == 0:
         return None
     input_size = X.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -46,18 +50,19 @@ def run_for_window(returns, window_days):
     X_tensor = torch.tensor(X, dtype=torch.float32)
     y_tensor = torch.tensor(y, dtype=torch.float32)
     dataset = TensorDataset(X_tensor, y_tensor)
-    dataloader = DataLoader(dataset, batch_size=config.BATCH_SIZE, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=min(config.BATCH_SIZE, len(dataset)), shuffle=True)
     criterion = nn.MSELoss()
     if config.OPTIMIZER == 'kfac':
         optimizer = KFACOptimizer(model, lr=config.LEARNING_RATE, damping=config.KFAC_DAMPING, update_freq=config.KFAC_UPDATE_FREQ)
     else:  # shampoo
         optimizer = Shampoo(model.parameters(), lr=config.LEARNING_RATE, damping=config.KFAC_DAMPING, update_freq=config.SHAMPOO_PRECONDITIONER_UPDATE)
     for epoch in range(config.EPOCHS):
-        train_one_epoch(model, dataloader, optimizer, criterion, device)
+        train_one_epoch(model, dataloader, optimizer, criterion, device, clip_value=1.0)
     model.eval()
     with torch.no_grad():
         pred = model(X_tensor).cpu().numpy()
-    # Convert numpy float32 to Python float for JSON serialization
+    # Replace any NaN in predictions with 0
+    pred = np.nan_to_num(pred, nan=0.0)
     raw_scores = {ticker: float(pred[i]) for i, ticker in enumerate(returns.columns)}
     return raw_scores, None
 
@@ -87,6 +92,8 @@ def main():
                 raw_scores, _ = run_for_window(returns, w)
                 if raw_scores is None:
                     continue
+                # Ensure no NaN in raw_scores
+                raw_scores = {k: float(v) if not np.isnan(v) else 0.0 for k, v in raw_scores.items()}
                 norm_scores = normalize_scores(raw_scores)
                 sorted_norm = sorted(norm_scores.items(), key=lambda x: x[1], reverse=True)
                 top_etfs = [{"ticker": t, "ng_score_norm": s, "raw_score": raw_scores[t]} for t, s in sorted_norm[:config.TOP_N]]
@@ -98,7 +105,7 @@ def main():
                 })
             except Exception as e:
                 print(f"    Failed for window {w}: {e}")
-        # Use the last window as best (for simplicity)
+        # Use the last window as best (or any)
         best_data = all_window_results[-1] if all_window_results else None
         results["universes"][uni_name] = {
             "best_window_data": best_data,
